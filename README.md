@@ -137,6 +137,10 @@ chaoxing-exam/
 - 题目含数学公式图片（线性代数、高等数学等）
 - 支持判断题、单选题、填空题
 
+## 注意事项
+
+- ⚠️ **使用 mimo 模型的用户不建议接入 Claude Code**：mimo 视觉模型的输出格式和 token 特性与 Claude Code 的 ACP 协议兼容性较差，可能导致子任务解析异常。建议 mimo 用户直接使用 Hermes Agent 原生能力处理解题环节。
+
 ## License
 
 MIT

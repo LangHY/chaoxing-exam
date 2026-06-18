@@ -29,6 +29,8 @@ pip3 install cloakbrowser beautifulsoup4
 python3 -m cloakbrowser install
 ```
 
+> ⚠️ **使用 mimo 模型的用户不建议接入 Claude Code**：mimo 视觉模型的输出格式和 token 特性与 Claude Code 的 ACP 协议兼容性较差，可能导致子任务解析异常。建议 mimo 用户直接使用 Hermes Agent 原生能力处理解题环节。
+
 ## 完整工作流程
 
 ### 步骤 1：登录并抓取页面
