@@ -1,10 +1,14 @@
 ---
 name: chaoxing-exam
-description: 超星学习通考试自动化：视觉模型提取题目文字 → 主 Agent 解题 → 自动填写答案。
+description: 学习通严父 — 超星学习通考试自动化：视觉模型提取题目文字 → 主 Agent 解题 → 自动填写答案 → 重做满分。两步走，零容忍，不满分不罢休。
 tags: [chaoxing, exam, vision, cloakbrowser, automation, education, two-step]
 ---
 
-# 超星学习通考试自动化
+# 学习通严父 🫡
+
+> 视觉为眼，推理为脑。两步走，零容忍，不满分不罢休。
+
+超星学习通（chaoxing.com）章节测试全自动化工具。
 
 ## 概述
 
@@ -135,6 +139,96 @@ submitForm(true, $(div), function(){});
 - 主 Agent 擅长逻辑推理，但看不到图片
 - 两步分开各取所长，准确率最高
 
+## 批量章节测试自动化（2026-06-18 新增）
+
+当用户要求"把所有章节测试都做完"时，按以下批量流程执行：
+
+### 流程
+
+1. **扫描所有章节**：从课程目录 iframe 获取所有 `本章单元测试` 的 chapterId
+2. **逐章检查状态**：对每个 chapter，打开 study page，找到 exam frame，检查：
+   - 是否有 exam frame（有些章节无 frame，跳过）
+   - 状态是"待完成"（可做）还是"已完成/待批阅"（需检查重做按钮）
+   - `btnBlueSubmit` 是否为 `function`（JS 是否加载）
+3. **逐章执行**：对每个可做的章节，执行完整的 提取→视觉→解题→填写→提交→重做 流程
+4. **汇总报告**：输出每章的成绩和状态
+
+### 单章执行模板
+
+```python
+def do_chapter(page, chapter_id, answers):
+    """单章完整流程：提取→填写→提交→检查→重做"""
+    STUDY_URL = f"https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId={chapter_id}&courseId=...&clazzid=...&cpi=...&enc=...&mooc2=1&hidetype=0&openc=..."
+    
+    page.goto(STUDY_URL, ...)
+    time.sleep(15)
+    for i in range(15):
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(2)
+    
+    # 找 frame（两种 URL 模式都要检查）
+    exam_frame = None
+    for frame in page.frames:
+        if 'doHomeWorkNew' in frame.url or 'selectWorkQuestion' in frame.url:
+            try:
+                if frame.evaluate("document.querySelectorAll('div.singleQuesId').length") > 0:
+                    exam_frame = frame
+                    break
+            except: pass
+    
+    if not exam_frame: return "NO_FRAME"
+    
+    # 检查状态
+    state = exam_frame.evaluate("document.body.innerText.substring(0, 100)")
+    has_redo = exam_frame.evaluate("document.body.innerText.includes('重做')")
+    has_bbs = exam_frame.evaluate("typeof btnBlueSubmit")
+    
+    if has_bbs != 'function': return "JS_NOT_LOADED"
+    
+    # 如果已完成且有重做按钮，先重做
+    if ('已完成' in state or '待批阅' in state) and has_redo:
+        # 点击重做 → 确认 → 等待 → 重新找 frame
+        ...
+    elif '已完成' in state and not has_redo:
+        return "NO_REDO"
+    
+    # 填写答案
+    for qid, letter in answers.items():
+        exam_frame.evaluate(f"""...""")
+        time.sleep(1.5)
+    
+    # 暂存 → 提交 → 确认
+    exam_frame.evaluate("btnBlueSubmit()")
+    time.sleep(3)
+    exam_frame.locator('#popok').click(force=True, timeout=5000)
+    time.sleep(15)
+    
+    # 获取成绩和标准答案
+    final_text = exam_frame.evaluate("document.body.innerText")
+    score = re.search(r'最终成绩([\d.]+)分', final_text)
+    my_answers = re.findall(r'我的答案：\s*(\S+)', final_text)
+    std_answers = re.findall(r'正确答案：\s*(\S+)', final_text)
+    
+    # 如果有错题且有重做按钮，用标准答案重做
+    wrong = [i for i in range(len(my_answers)) if my_answers[i] != std_answers[i]]
+    if wrong and '重做' in final_text:
+        # 重做流程...
+        pass
+    
+    return score.group(1) if score else "NO_SCORE"
+```
+
+### 批量执行注意事项
+
+> 📖 实测批量结果和统计数据见 `references/batch-test-results.md`
+
+1. **每章用同一个 browser context**：不需要每章重新登录，CloakBrowser 持久化 context 保持 cookies
+2. **每章用 `page = context.new_page()`**：新开 tab 避免页面状态污染
+3. **章节间不需要等待**：直接开新 tab 做下一章
+4. **视觉提取分段**：题目超过 8 道时，截图可能太长导致视觉模型截断。分两次调用（上半部分 + 下半部分）
+5. **跳过无 frame 的章节**：有些章节可能没有考试内容
+6. **待批阅状态**：填空题/简答题提交后状态为"待批阅"（需人工批改），这些章节可能没有重做按钮
+
 ## 常见陷阱
 
 1. **选择题点击无效**：`parent.click()` 触发 AJAX 失败。必须直接 DOM 操作 `check_answer` class
@@ -145,3 +239,26 @@ submitForm(true, $(div), function(){});
 6. **题目未加载**：必须充分滚动页面
 7. **答案需复核**：视觉模型给的答案需主 Agent 复核，实测 50 题中有 3 题需要修正
 8. **Markdown LaTeX 格式错误**：视觉模型输出的 LaTeX 需清理，检查 `$` 是否配对
+9. **重做按钮不是所有章节都有**（2026-06-18 新增）：
+   - "待完成"状态：没有重做按钮（首次未提交）
+   - "已完成"状态：有重做按钮（可重做拿满分）
+   - "待批阅"状态：可能没有重做按钮（填空题/简答题需人工批改）
+   - 检查方法：`exam_frame.evaluate("document.body.innerText.includes('重做')")`
+10. **重做后 JS 可能不加载**（2026-06-18 新增）：
+   - 重做后 frame URL 带 `reEdit=2` 参数，可能导致 `btnBlueSubmit` 和 `UE` 为 `undefined`
+   - 症状：填写选择题 OK（纯 DOM click），但提交失败（`btnBlueSubmit is not defined`）
+   - 检查方法：`exam_frame.evaluate("typeof btnBlueSubmit")` 应返回 `'function'`
+   - 如果为 `undefined`，该章重做提交会失败，应跳过或尝试刷新 frame
+11. **视觉提取超长页面需分段**（2026-06-18 新增）：
+   - 超过 8-10 道题时，全页截图分辨率低，视觉模型可能截断或遗漏后半部分题目
+   - 解决：分两次调用视觉模型——"请识别上半部分（第1-N题）"和"请识别下半部分（第N+1-M题）"
+   - 或提高截图分辨率：`page.screenshot(path=..., full_page=True)` 后用 `vision_analyze` 逐段识别
+12. **frame URL 两种模式**（2026-06-18 新增）：
+   - `doHomeWorkNew`：未完成/进行中的考试
+   - `selectWorkQuestionYiPiYue`：已完成/待批阅的结果页（仍显示题目和答案）
+   - 两者都有 `div.singleQuesId` 元素，但 `selectWorkQuestionYiPiYue` 上 `btnBlueSubmit` 可能为 `undefined`
+   - 找 frame 时必须同时检查两种模式
+13. **同一个 browser context 可做多章**（2026-06-18 新增）：
+   - 不需要每章重新登录，CloakBrowser 持久化 context 保持所有 cookies
+   - 每章用 `page = context.new_page()` 开新 tab，避免页面状态污染
+   - 上一章的 tab 可以关闭（`page.close()`）或保留
