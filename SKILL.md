@@ -54,22 +54,27 @@ page.goto(EXAM_URL, wait_until="domcontentloaded", timeout=90000)
 
 用 BeautifulSoup 从 HTML 中提取结构化数据。
 
-**HTML 结构**：
+**HTML 结构**（2026-06 实测，新版页面）：
 ```
-div.questionLi          # 每道题容器
-  h3.mark_name          # 题号 + 题型 + 分值
-    span                # "(单选题, 2.0 分)"
-    div > p > img       # 题干图片（多数数学公式为图片）
-  form
-    input[type=hidden]  # questionId, type, typeName, answer
-    div.stem_answer     # 选项容器
-      div.clearfix      # 每个选项
-        span.num_option # 选项字母 A/B/C/D，data 属性存值
-        div.answer_p    # 选项内容（文字或图片）
-    div.sub_que_div     # 填空题空位
-      textarea          # 填空答案输入框
-      iframe            # UEditor 富文本编辑器
+div.singleQuesId[data="questionId"]   # 每道题容器（⚠️ 不是 div.questionLi）
+  div.TiMu
+    div.Zy_TItle
+      i                                 # 题号
+      div.font-cxsecret                 # 题干（文字/图片混排）
+        span.newZy_TItle                # "【单选题】"
+        p / img                         # 题干文字和公式图片
+    ul.Zy_ulTk
+      div.clearfix                      # 每个选项
+        span.num_option                 # 显示字母 A/B/C/D，data 属性存提交值
+        div.answer_p                    # 选项内容
+      div.blankItemDiv                  # 填空题空位（如有）
+        textarea                        # 填空答案输入框
+        div.edui-default                # UEditor 富文本编辑器
 ```
+
+**⚠️ 关键选择器变化**（2026-06）：
+- 旧版：`div.questionLi` → 新版：`div.singleQuesId`
+- 先用 `page.evaluate("document.querySelectorAll('div.singleQuesId').length")` 确认题目数
 
 ### 步骤 3：视觉提取题目文字
 
@@ -98,36 +103,67 @@ div.questionLi          # 每道题容器
 
 ### 步骤 5：填写答案
 
-#### 选择题：直接 DOM 操作
+> 📖 详细答案 JSON 格式规范见 `references/answer-json-format.md`，特别是 `data` 属性值 vs 显示字母的区别。
 
-不能用 `parent.click()` 或调用 `saveSingleSelect()`（会触发 AJAX，在预览模式下失败导致状态重置）。
+**⚠️ 关键：选择题和填空题使用不同的机制**
+
+#### 选择题：`span.parentElement.click()`（唯一稳定方法）
+
+> ⚠️ **2026-06-14 实测结论**：三种方法中，只有 `click()` 全部 40 题稳定生效。
+
+**✅ 推荐方法：按显示字母匹配 + `span.parentElement.click()`**
+
+2026-06-17 更新：重做后选项的 `data` 属性值会随机化，**不能用 data 值匹配**。改用显示字母（textContent）匹配更可靠：
 
 ```javascript
-const qDiv = document.getElementById('sigleQuestionDiv_' + qid);
-qDiv.querySelectorAll('.saveSingleSelect').forEach(s => s.classList.remove('check_answer'));
-qDiv.querySelectorAll('span.num_option').forEach(span => {
-    if (span.textContent.trim() === targetLetter) {
-        span.classList.add('check_answer');
-        const hidden = qDiv.querySelector('input[name="answer' + qid + '"]');
-        if (hidden) hidden.value = span.getAttribute('data');
+const qDiv = document.querySelector('div.singleQuesId[data="' + qid + '"]');
+const spans = qDiv.querySelectorAll('span.num_option');
+for (const span of spans) {
+    if (span.textContent.trim() === displayLetter) {  // 按显示字母匹配
+        if (span.classList.contains('check_answer')) return;  // 已选中，跳过
+        span.parentElement.click();  // 触发原生事件链
+        return;
     }
-});
+}
 ```
 
-#### 填空题：UEditor API
+**❌ 旧方法（重做后不可靠）**：用 `getAttribute('data') === targetValue` 匹配。
+重做后 data 值会重新随机化，导致匹配失败（返回 NO_MATCH）。
+
+**❌ 不可靠方法 1：`eval(optDiv.getAttribute('onclick'))`**
+`this` 指向 `window`，AJAX 不触发。
+
+**❌ 不可靠方法 2：直接调用 `saveSingleSelect(span, qid)`**
+前 ~27 题正常，后续 AJAX 挂起。
+
+**❌ 不可靠方法 3：纯 DOM 操作（添加 `check_answer` class）**
+页面显示正确但不触发 AJAX 保存，刷新后丢失。
+
+**⚠️ 点击间隔**：每题之间至少 800ms（推荐 1500ms），太快会 AJAX 冲突。
+
+**⚠️ 点击是 toggle 操作**：点击已选中的选项会取消选中！脚本必须先检查 `span.classList.contains('check_answer')`，已正确则跳过。
+
+#### 填空题/简答题/论述题：UEditor API + 保存按钮
 
 不能直接写 `textarea.value` 或 `iframe.body.innerHTML`（UEditor 不认，关闭后丢失）。
 
-```javascript
-const editorId = 'answerEditor' + qid + '1';  // qid + 空位编号
-const editor = UE.getEditor(editorId);
-editor.setContent('<p>' + answer + '</p>');
-editor.sync();
+**正确方法**：通过 UEditor API 设置内容并 sync，**然后点击保存按钮**：
 
-// 触发保存
-const div = document.getElementById('sigleQuestionDiv_' + qid);
-submitForm(true, $(div), function(){});
+```javascript
+// editor ID：answerEditor{questionId}{空位编号}（⚠️ 不是 answer{questionId}）
+const editorId = 'answerEditor' + qid + '1';  // 第1空
+const editor = UE.getEditor(editorId);
+editor.setContent('<p>' + answer + '</p>');     // 写入 UEditor
+editor.sync();                                   // 同步回 textarea
+
+// ⚠️ 必须点击保存按钮才能持久化！
+const saveBtn = document.getElementById('save_' + qid);
+if (saveBtn) saveBtn.click();
 ```
+
+**UEditor editor ID 规则**：`answerEditor{questionId}{空位编号}`
+- 例如 questionId=404896870，第1空 → editorId = `answerEditor4048968701`
+- 先检查页面 HTML 中的 textarea/script 标签确认实际 ID
 
 ## 两步工作流原理
 
@@ -233,34 +269,53 @@ def do_chapter(page, chapter_id, answers):
 
 ## 常见陷阱
 
-1. **选择题点击无效**：`parent.click()` 触发 AJAX 失败。必须直接 DOM 操作 `check_answer` class
-2. **填空题关闭后丢失**：直接写 textarea 不经过 UEditor。必须用 `UE.getEditor().setContent()` + `.sync()`
-3. **图片下载失败**：URL 带 `#` 片段需去掉
-4. **视觉模型直接给答案不可靠**：必须两步分开
-5. **视觉模型返回空结果**：prompt 中明确说"不要分析不要给答案"
-6. **题目未加载**：必须充分滚动页面
-7. **答案需复核**：视觉模型给的答案需主 Agent 复核，实测 50 题中有 3 题需要修正
-8. **Markdown LaTeX 格式错误**：视觉模型输出的 LaTeX 需清理，检查 `$` 是否配对
-9. **重做按钮不是所有章节都有**（2026-06-18 新增）：
-   - "待完成"状态：没有重做按钮（首次未提交）
-   - "已完成"状态：有重做按钮（可重做拿满分）
-   - "待批阅"状态：可能没有重做按钮（填空题/简答题需人工批改）
-   - 检查方法：`exam_frame.evaluate("document.body.innerText.includes('重做')")`
-10. **重做后 JS 可能不加载**（2026-06-18 新增）：
-   - 重做后 frame URL 带 `reEdit=2` 参数，可能导致 `btnBlueSubmit` 和 `UE` 为 `undefined`
-   - 症状：填写选择题 OK（纯 DOM click），但提交失败（`btnBlueSubmit is not defined`）
-   - 检查方法：`exam_frame.evaluate("typeof btnBlueSubmit")` 应返回 `'function'`
-   - 如果为 `undefined`，该章重做提交会失败，应跳过或尝试刷新 frame
-11. **视觉提取超长页面需分段**（2026-06-18 新增）：
-   - 超过 8-10 道题时，全页截图分辨率低，视觉模型可能截断或遗漏后半部分题目
-   - 解决：分两次调用视觉模型——"请识别上半部分（第1-N题）"和"请识别下半部分（第N+1-M题）"
-   - 或提高截图分辨率：`page.screenshot(path=..., full_page=True)` 后用 `vision_analyze` 逐段识别
-12. **frame URL 两种模式**（2026-06-18 新增）：
-   - `doHomeWorkNew`：未完成/进行中的考试
-   - `selectWorkQuestionYiPiYue`：已完成/待批阅的结果页（仍显示题目和答案）
-   - 两者都有 `div.singleQuesId` 元素，但 `selectWorkQuestionYiPiYue` 上 `btnBlueSubmit` 可能为 `undefined`
-   - 找 frame 时必须同时检查两种模式
-13. **同一个 browser context 可做多章**（2026-06-18 新增）：
-   - 不需要每章重新登录，CloakBrowser 持久化 context 保持所有 cookies
-   - 每章用 `page = context.new_page()` 开新 tab，避免页面状态污染
-   - 上一章的 tab 可以关闭（`page.close()`）或保留
+1. **选择题唯一稳定方法是 `span.parentElement.click()`**：`eval(onclick)` 因 `this` 上下文错误导致 AJAX 不触发；`saveSingleSelect(span, qid)` 直接调用会在 ~27 题后卡死（AJAX 挂起）；纯 DOM 操作不持久。只有 `click()` 走原生事件链，40/40 实测稳定
+2. **选择题点击间隔 ≥800ms**：太快会导致 AJAX 请求冲突或被限流，推荐 1500ms
+3. **选择题点击是 toggle 操作**：点击已选中的选项会取消选中。脚本必须先用 `span.classList.contains('check_answer')` 检查当前状态，已正确则跳过
+4. **`data` 属性 ≠ 显示文本，且重做后会随机化**（2026-06-17 更新）：
+   - `span.num_option` 的 `textContent`（显示字母如 "A"）和 `getAttribute('data')`（提交值）**不一定相同**
+   - **重做后 `data` 值会重新随机化**！同一个选项显示 "A"，重做前 data="C"，重做后可能变成 data="D"
+   - **填写答案时必须用显示字母（textContent）匹配**，不能用 data 值匹配
+5. **判断题的 data 值是 "true"/"false"**：不是 "A"/"B"
+6. **选择器更新（2026-06）**：旧版 `div.questionLi` → 新版 `div.singleQuesId`
+7. **视觉模型可能返回空结果**：部分图片（数学公式密集）视觉模型返回 0 字符。需重试或手动用 `vision_analyze` 补充
+8. **视觉模型直接给答案不可靠**：必须两步分开：视觉只提文字，主 Agent 解题
+9. **批量视觉提取用 asyncio 并发**：127 张图片串行 ~20 分钟，5 并发只需 ~2 分钟
+10. **图片下载失败**：URL 带 `#` 片段需去掉
+11. **题目未加载**：必须充分滚动页面（循环 `scrollTo(0, scrollHeight)` 直到高度稳定）
+12. **登录态过期**：持久化上下文在 `~/.hermes/chaoxing_profile/`，过期需重新登录
+13. **UEditor editor ID 格式**：实际为 `answerEditor{questionId}{空位编号}`（如 `answerEditor4048968701`），不是 `answer{questionId}`
+14. **简答/论述题必须点击保存按钮**：UEditor 的 `setContent()` + `sync()` 不会自动保存到服务器，必须点击 `save_{questionId}` 按钮
+15. **提交确认按钮 `#popok` 的点击方法取决于上下文**（2026-06-17 更新）：
+    - 确认弹窗中"提交"按钮（`id="popok"`, `class="jb_btn jb_btn_92"`）**没有 onclick 属性**，事件通过 jQuery `.on('click', ...)` 绑定
+    - **直接打开考试页**（URL 是 `doHomeWorkNew`）：`dispatchEvent` 有效
+      ```javascript
+      const btn = document.getElementById('popok');
+      ['mousedown', 'mouseup', 'click'].forEach(type => {
+          btn.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      });
+      ```
+    - **通过 study page iframe 访问考试**：`dispatchEvent` **无效**（静默失败）。必须用 **Playwright locator force click**：
+      ```python
+      exam_frame.locator('#popok').click(force=True, timeout=5000)
+      ```
+16. **`btnBlueSubmit()` 弹出确认弹窗**：流程是 `btnBlueSubmit()` → 等3秒 → 点击 `#popok`
+17. **重做流程**（2026-06-17 实测）：
+    - 结果页有"重做"按钮，onclick=`redoTest()`，class=`jb_btn_bg`
+    - 点击后弹出确认："之前答题内容会保留，确认重做？"→ 需点"确定"
+    - **确认后页面内容变为"待完成"的答题页面，URL 不变**
+    - 重做后选项的 `data` 属性值会重新随机化，必须用显示字母匹配
+    - 重做后 **必须重新查找 frame 并验证 `typeof btnBlueSubmit === 'function'`**
+18. **重做后 JS 可能不加载**（2026-06-18 实测）：
+    - 重做后 frame URL 带 `reEdit=2` 参数，可能导致 `btnBlueSubmit` 和 `UE` 为 `undefined`
+    - 症状：选择题填写 OK（纯 DOM click），但提交失败（`btnBlueSubmit is not defined`）
+    - 如果 `typeof btnBlueSubmit !== 'function'`，该章重做提交会失败，应跳过
+19. **frame URL 两种模式**（2026-06-18 实测）：
+    - `doHomeWorkNew`：未完成/进行中的考试（`btnBlueSubmit` 通常可用）
+    - `selectWorkQuestionYiPiYue`：已完成/待批阅的结果页（仍有题目 DOM）
+    - 找 frame 时必须同时检查两种模式
+20. **超星页面字体反爬**：`document.body.innerText` 返回乱码中文，不影响视觉截图识别
+21. **超长题目页视觉提取需分段**（2026-06-18 实测）：
+    - 超过 8 道题时，全页截图分辨率低，视觉模型可能截断后半部分
+    - 解决：分两次调用——"请识别上半部分（第1-N题）"和"请识别下半部分（第N+1-M题）"
+22. **章节测试不能直接用考试 URL**（缺 `enc` 参数会 403）：必须通过 study page → iframe 链路获取
