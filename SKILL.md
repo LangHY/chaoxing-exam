@@ -1,6 +1,6 @@
 ---
 name: chaoxing-exam
-description: 学习通严父 — 超星学习通考试自动化：视觉模型提取题目文字 → 主 Agent 解题 → 自动填写答案 → 重做满分。两步走，零容忍，不满分不罢休。
+description: 学习通严父 — 超星学习通在线答题自动化：视觉模型提取题目文字 → 主 Agent 解题 → 自动填写答案 → 重做满分。适用于章节测试、随堂测验等非正式考试场景。两步走，零容忍，不满分不罢休。
 tags: [chaoxing, exam, vision, cloakbrowser, automation, education, two-step]
 ---
 
